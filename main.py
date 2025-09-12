@@ -7,10 +7,11 @@ import cloudinary
 import cloudinary.uploader
 import os
 from dotenv import load_dotenv
-from pathlib import Path
 
-# Chave da API - corrigido o nome da variável
-load_dotenv()  # lê o .env
+# =============================
+# Configuração inicial
+# =============================
+load_dotenv()
 
 API_KEY_APP = os.getenv("API_KEY_APP")
 
@@ -20,141 +21,260 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
-# Verificar configuração
-config = cloudinary.config()
-print(f"Configuração final - Cloud: {config.cloud_name}, Key: {config.api_key}")
-print("=== FIM CONFIGURAÇÃO ===\n")
-
 VOZES = {
-    "male": "pt-BR-AntonioNeural",
     "female": "pt-BR-FranciscaNeural",
+    "female_two": "pt-BR-LeilaNeural",
+    "female_three": "pt-BR-LeticiaNeural",
+    "female_four": "pt-BR-ThalitaNeural",
+    "female_five": "pt-BR-BrendaNeural",
+    "female_six": "pt-BR-ElzaNeural",
+    "female_seven": "pt-BR-GiovannaNeural",
+    "female_eight": "pt-BR-ElzaNeural",
+    "female_nine": "pt-BR-ManuelaNeural",
+    "female_ten": "pt-BR-YaraNeural",
+
+
+    "male": "pt-BR-AntonioNeural",
+    "male_two": "pt-BR-MacerioMultilingualNeural",
+    "male_three": "pt-BR-DonatoNeural",
+    "male_four": "pt-BR-FabioNeural",
+    "male_five": "pt-BR-HumbertoNeural",
+    "male_six": "pt-BR-JulioNeural",
+    "male_seven": "pt-BR-NicolauNeural",
+    "male_eight": "pt-BR-ValerioNeural",
+
 }
 
 app = FastAPI(title="TTS API")
 
 
+# =============================
+# Models
+# =============================
 class TextRequest(BaseModel):
-    uuid: str  # Nome único do arquivo vindo do backend Java
-    text: str  # Texto para gerar áudio
-    voice_type: str  # "male" ou "female"
+    uuid: str
+    text: str
+    voice_type: str  # "male", "female", "young_male" etc.
+    rate: str | None = None  # Ex: "+10%", "-5%"
+    pitch: str | None = None  # Ex: "+5%", "-3%"
+    volume: str | None = None  # Ex: "+0%", "-10%"
+    style: str | None = None  # Ex: "cheerful", "angry", "chat"
+    styledegree: int | None = None  # Intensidade (1-2)
 
 
-async def gerar_audio(text: str, voice_type: str, file_name: str):
-    tts = edge_tts.Communicate(text, voice_type)
+# =============================
+# Funções auxiliares
+# =============================
+async def gerar_audio(dados: TextRequest, file_name: str):
+    """Gera o áudio usando edge-tts com parâmetros corretos."""
+    if dados.voice_type not in VOZES:
+        raise HTTPException(status_code=400, detail="Voz inválida.")
+
+    voice = VOZES[dados.voice_type]
+
+    # CORREÇÃO: edge-tts usa parâmetros diretos, não SSML
+    # Constrói os parâmetros de rate, pitch e volume
+    rate = dados.rate or "+0%"
+    pitch = dados.pitch or "+0%"
+    volume = dados.volume or "+0%"
+
+    # Para edge-tts, você precisa passar o texto limpo e os parâmetros separadamente
+    tts = edge_tts.Communicate(
+        text=dados.text,  # Texto puro, sem SSML
+        voice=voice,
+        rate=rate,
+        pitch=pitch,
+        volume=volume
+    )
+
+    # Salva o arquivo
     await tts.save(file_name)
 
 
-@app.post("/gerar-audio", response_class=PlainTextResponse)
+# =============================
+# Endpoints
+# =============================
+@app.post("/generate-audio", response_class=PlainTextResponse)
 async def gerar_audio_endpoint(dados: TextRequest, key: str):
-    # Validação da chave (agora vem da URL como query parameter)
-    if key != API_KEY_APP:  # Corrigido: usando API_KEY_APP
+    if key != API_KEY_APP:
         raise HTTPException(status_code=401, detail="Chave inválida!")
-
-    # Validação da voz
-    if dados.voice_type not in VOZES:
-        raise HTTPException(status_code=400, detail="Voz inválida. Use 'male' ou 'female'.")
 
     file_name = f"{dados.uuid}.mp3"
 
     try:
-        # Gerar áudio localmente
-        await gerar_audio(dados.text, VOZES[dados.voice_type], file_name)
+        await gerar_audio(dados, file_name)
 
-        # Verificar se arquivo foi criado
         if not os.path.exists(file_name):
-            raise HTTPException(status_code=500, detail="Arquivo de áudio não foi gerado.")
+            raise HTTPException(status_code=500, detail="Falha ao gerar áudio.")
 
-        # Fazer upload para Cloudinary - versão mais simples
-        print(f"Iniciando upload do arquivo: {file_name}")
-        print(f"UUID: {dados.uuid}")
 
         upload_result = cloudinary.uploader.upload(
             file_name,
-            resource_type="video",  # Para áudio
+            folder="stream-pix-audio",
+            resource_type="video",
             public_id=dados.uuid
-            # Removemos todas as opções extras para testar
         )
 
-        print(f"Upload realizado com sucesso!")
-        print(f"Public ID: {upload_result.get('public_id')}")
-        print(f"URL: {upload_result.get('secure_url')}")
-
-        # Retornar apenas a URL sem as aspas (string pura)
         return upload_result.get("secure_url")
 
-    except cloudinary.exceptions.Error as e:
-        # Log detalhado do erro do Cloudinary
-        print(f"=== ERRO CLOUDINARY ===")
-        print(f"Tipo do erro: {type(e).__name__}")
-        print(f"Mensagem: {str(e)}")
-        print(f"Arquivo tentando upload: {file_name}")
-        print(f"Arquivo existe: {os.path.exists(file_name)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+    finally:
         if os.path.exists(file_name):
-            print(f"Tamanho do arquivo: {os.path.getsize(file_name)} bytes")
-        print("=== FIM ERRO ===")
-        raise HTTPException(status_code=500, detail=f"Erro no upload: {str(e)}")
+            os.remove(file_name)
+
+
+@app.post("/generate-audio-simple", response_class=PlainTextResponse)
+async def gerar_audio_simples_endpoint(dados: TextRequest, key: str):
+    """Versão simplificada sem parâmetros extras."""
+    if key != API_KEY_APP:
+        raise HTTPException(status_code=401, detail="Chave inválida!")
+
+    file_name = f"{dados.uuid}.mp3"
+
+    try:
+        if dados.voice_type not in VOZES:
+            raise HTTPException(status_code=400, detail="Voz inválida.")
+
+        voice = VOZES[dados.voice_type]
+
+        # Versão simplificada - apenas texto e voz
+        tts = edge_tts.Communicate(dados.text, voice)
+
+        # Tenta salvar com timeout menor
+        try:
+            await asyncio.wait_for(tts.save(file_name), timeout=30)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=500, detail="Timeout ao gerar áudio - tente texto menor")
+
+        if not os.path.exists(file_name):
+            raise HTTPException(status_code=500, detail="Falha ao gerar áudio.")
+
+        upload_result = cloudinary.uploader.upload(
+            file_name,
+            folder="stream-pix-audio",
+            resource_type="video",
+            public_id=dados.uuid
+        )
+
+        return upload_result.get("secure_url")
 
     except Exception as e:
-        # Log de outros erros
-        print(f"Erro geral: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro interno do servidor")
-
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
     finally:
-        # Remover arquivo local sempre
         if os.path.exists(file_name):
             os.remove(file_name)
 
 
 @app.get("/health")
 async def health_check():
-    """Endpoint para verificar se a API está funcionando"""
-    return {"status": "OK", "message": "TTS API está funcionando"}
+    return {"status": "OK", "message": "TTS API funcionando"}
 
 
-@app.get("/debug-cloudinary")
-async def debug_cloudinary():
-    """Endpoint para debug detalhado do Cloudinary"""
+# =============================
+# Endpoint alternativo com SSML (se necessário)
+# =============================
+@app.post("/generate-audio-ssml", response_class=PlainTextResponse)
+async def gerar_audio_ssml_endpoint(dados: TextRequest, key: str):
+    """Versão que usa SSML corretamente."""
+    if key != API_KEY_APP:
+        raise HTTPException(status_code=401, detail="Chave inválida!")
+
+    file_name = f"{dados.uuid}.mp3"
+
     try:
-        config = cloudinary.config()
+        if dados.voice_type not in VOZES:
+            raise HTTPException(status_code=400, detail="Voz inválida.")
 
-        # Teste de assinatura básica
-        from cloudinary.utils import cloudinary_url
-        test_url = cloudinary_url("sample.jpg")
+        voice = VOZES[dados.voice_type]
 
-        return {
-            "status": "OK",
-            "config": {
-                "cloud_name": config.cloud_name,
-                "api_key": config.api_key,
-                "api_secret_length": len(config.api_secret) if config.api_secret else 0,
-                "secure": config.secure
-            },
-            "test_url": test_url[0] if test_url else None
-        }
+        # Se você realmente precisar usar SSML com edge-tts,
+        # precisa criar o SSML de forma diferente
+        rate = dados.rate or "+0%"
+        pitch = dados.pitch or "+0%"
+        volume = dados.volume or "+0%"
+
+        # Cria SSML básico sem namespaces complexos
+        ssml_text = f'''
+        <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="pt-BR">
+            <voice name="{voice}">
+                <prosody rate="{rate}" pitch="{pitch}" volume="{volume}">
+                    {dados.text}
+                </prosody>
+            </voice>
+        </speak>
+        '''
+
+        # IMPORTANTE: Para usar SSML com edge-tts, você precisa passar
+        # o texto SSML como se fosse texto normal, MAS o edge-tts pode
+        # não processar todo SSML corretamente
+        tts = edge_tts.Communicate(
+            text=ssml_text,
+            voice=voice
+        )
+
+        await tts.save(file_name)
+
+        if not os.path.exists(file_name):
+            raise HTTPException(status_code=500, detail="Falha ao gerar áudio.")
+
+        upload_result = cloudinary.uploader.upload(
+            file_name,
+            folder="stream-pix-audio",
+            resource_type="video",
+            public_id=dados.uuid
+        )
+
+        return upload_result.get("secure_url")
+
     except Exception as e:
-        return {"status": "ERROR", "error": str(e), "type": type(e).__name__}
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+    finally:
+        if os.path.exists(file_name):
+            os.remove(file_name)
 
 
-@app.get("/test-cloudinary")
-async def test_cloudinary():
-    """Endpoint para testar a configuração do Cloudinary"""
-    try:
-        # Verificar se as credenciais estão configuradas
-        config = cloudinary.config()
 
-        return {
-            "status": "OK",
-            "cloud_name": config.cloud_name,
-            "api_key": config.api_key,
-            "api_secret_configured": bool(config.api_secret),
-            "api_secret_length": len(config.api_secret) if config.api_secret else 0
-        }
-    except Exception as e:
-        return {"status": "ERROR", "error": str(e)}
+@app.post("/generate-all-voices")
+async def gerar_todas_vozes_endpoint(key: str):
+    if key != API_KEY_APP:
+        raise HTTPException(status_code=401, detail="Chave inválida!")
+
+    texto = "Essa é a minha voz, podemos criar isso juntos!"
+    resultados = {}
+
+    for chave, voice in VOZES.items():
+        file_name = f"{chave}.mp3"
+
+        try:
+            tts = edge_tts.Communicate(texto, voice)
+            await tts.save(file_name)
+
+            upload_result = cloudinary.uploader.upload(
+                file_name,
+                folder="stream-pix-audio",
+                resource_type="video",
+                public_id=chave
+            )
+
+            resultados[chave] = upload_result.get("secure_url")
+
+        except Exception as e:
+            resultados[chave] = f"Erro: {str(e)}"
+
+        finally:
+            if os.path.exists(file_name):
+                os.remove(file_name)
+
+    return resultados
 
 
 if __name__ == "__main__":
-    print("Server iniciado - código atualizado")
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8003)
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True
+    )
